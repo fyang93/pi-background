@@ -14,6 +14,7 @@ type Job = {
   id: string; mode: Mode; description: string; pid: number; child: ChildProcess;
   status: "running" | "exited"; code: number | null; signal: string | null;
   started: number; eventCount: number; logPath: string; error?: string;
+  stdoutTail: Buffer;
   silent: boolean; tail: Buffer; pending: string; pendingCount: number;
   truncated: boolean; suppressed: number; wakes: number[];
   timer?: ReturnType<typeof setTimeout>; done: Promise<void>; stopping?: Promise<void>;
@@ -119,13 +120,14 @@ export default function (pi: ExtensionAPI) {
       let resolve!: () => void;
       const job: Job = { id, mode: params.mode, description: params.description, pid: child.pid ?? 0, child,
         status: "running", code: null, signal: null, started: Date.now(), eventCount: 0, logPath,
-        silent: false, tail: Buffer.alloc(0), pending: "", pendingCount: 0, truncated: false,
+        silent: false, tail: Buffer.alloc(0), stdoutTail: Buffer.alloc(0), pending: "", pendingCount: 0, truncated: false,
         suppressed: 0, wakes: [], done: new Promise<void>((done) => { resolve = done; }) };
       jobs.set(id, job);
       process.off("exit", onExit); process.on("exit", onExit);
       for (const stream of [child.stdout!, child.stderr!]) {
         stream.on("data", (chunk: Buffer) => {
           job.tail = Buffer.concat([job.tail, chunk]).subarray(-64 * 1024);
+          if (stream === child.stdout) job.stdoutTail = Buffer.concat([job.stdoutTail, chunk]).subarray(-64 * 1024);
         });
         stream.pipe(log, { end: false });
       }
@@ -148,8 +150,8 @@ export default function (pi: ExtensionAPI) {
         job.status = "exited"; job.code = code; job.signal = signal;
         if (!job.silent && !shuttingDown) {
           if (job.mode === "monitor") flush(job, true);
-          const tail = job.tail.toString("utf8").replace(/\n$/, "").split("\n").slice(-20).join("\n");
-          wake(job, `exited ${code ?? signal ?? "unknown"}`, tail + (job.error ? `\n${job.error}` : ""), job.suppressed);
+          const output = (job.mode === "monitor" ? job.stdoutTail : job.tail).toString("utf8").replace(/\n$/, "").split("\n").slice(-20).join("\n");
+          wake(job, `exited ${code ?? signal ?? "unknown"}`, output + (job.error ? `\n${job.error}` : ""), job.suppressed);
         }
         resolve();
       });
