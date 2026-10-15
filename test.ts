@@ -351,9 +351,9 @@ test("wake content is bounded, explicitly untrusted, and quotes instruction-like
   assert.ok(readFileSync(done.logPath, "utf8").length > 20_000, "message limits must not truncate the log");
 });
 
-test("independent row counts both modes, updates on natural exit and stop, and clears on shutdown", async (t) => {
+test("independent row counts both modes, hides at zero, and clears on shutdown", async (t) => {
   const h = harness(t, true);
-  assert.match(h.widgets.at(-1)![0], /^0 background tasks running/);
+  assert.equal(h.widgets.at(-1), undefined);
   const background = await h.run("exec sleep 60");
   const monitor = await h.run("exec sleep 60", "monitor");
   assert.match(h.widgets.at(-1)![0], /^2 background tasks running.*\/ps/);
@@ -363,7 +363,7 @@ test("independent row counts both modes, updates on natural exit and stop, and c
   await waitUntil(async () => (await h.list()).filter((j) => j.status === "running").length, (n) => n === 1, "natural exit widget");
   assert.match(h.widgets.at(-1)![0], /^1 background task running/);
   await h.execute("background_stop", { id: monitor.id });
-  assert.match(h.widgets.at(-1)![0], /^0 background tasks running/);
+  assert.equal(h.widgets.at(-1), undefined);
   await h.shutdown();
   assert.equal(h.widgets.at(-1), undefined);
 });
