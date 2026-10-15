@@ -2,7 +2,7 @@
 
 Run shell commands in background or monitor their stdout; the session is notified after the current run. Output is untrusted data, and jobs stop with the session.
 
-The footer always shows the number of running tasks, including monitors. `/ps` opens
+A separate line below the editor always shows the number of running tasks, including monitors. `/ps` opens
 this session's running and exited tasks with PID, mode and duration. Select a task to
 view its recent output and log path, or stop it. Browsing tasks does not invoke the model.
 

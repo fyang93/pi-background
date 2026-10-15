@@ -34,12 +34,17 @@ function harness(t: TestContext, hasUI = false) {
   const handlers = new Map<string, Array<(...args: any[]) => any>>();
   const wakes: Wake[] = [];
   const commands = new Map<string, any>();
-  const statuses: Array<string | undefined> = [];
+  const widgets: Array<string[] | undefined> = [];
   const notices: string[] = [];
   const selections: Array<{ title: string; options: string[] }> = [];
   const choices: Array<string | ((options: string[]) => string | undefined)> = [];
   const ctx = { cwd: dir, hasUI, mode: "tui", sessionManager: { getSessionId: () => session }, ui: {
-    setStatus: (_key: string, value: string | undefined) => { statuses.push(value); },
+    setStatus: () => { assert.fail("background count must use its own widget, not the shared footer"); },
+    setWidget: (key: string, value: string[] | undefined, options?: { placement: string }) => {
+      assert.equal(key, "background");
+      if (value) { assert.equal(value.length, 1); assert.equal(options?.placement, "belowEditor"); }
+      widgets.push(value);
+    },
     notify: (text: string) => { notices.push(text); },
     select: async (title: string, options: string[]) => {
       selections.push({ title, options });
@@ -109,7 +114,7 @@ function harness(t: TestContext, hasUI = false) {
     writeFileSync(path, source);
     return `exec ${quote(process.execPath)} ${quote(path)}`;
   };
-  return { dir, ctx, tools, wakes, execute, shutdown, json, list, run, script, commands, statuses, notices, selections, choices };
+  return { dir, ctx, tools, wakes, execute, shutdown, json, list, run, script, commands, widgets, notices, selections, choices };
 }
 
 type Harness = ReturnType<typeof harness>;
@@ -346,21 +351,21 @@ test("wake content is bounded, explicitly untrusted, and quotes instruction-like
   assert.ok(readFileSync(done.logPath, "utf8").length > 20_000, "message limits must not truncate the log");
 });
 
-test("footer counts both modes, updates on natural exit and stop, and clears on shutdown", async (t) => {
+test("independent row counts both modes, updates on natural exit and stop, and clears on shutdown", async (t) => {
   const h = harness(t, true);
-  assert.match(h.statuses.at(-1)!, /^0 background tasks running/);
+  assert.match(h.widgets.at(-1)![0], /^0 background tasks running/);
   const background = await h.run("exec sleep 60");
   const monitor = await h.run("exec sleep 60", "monitor");
-  assert.match(h.statuses.at(-1)!, /^2 background tasks running.*\/ps/);
+  assert.match(h.widgets.at(-1)![0], /^2 background tasks running.*\/ps/);
   await h.execute("background_stop", { id: background.id });
-  assert.match(h.statuses.at(-1)!, /^1 background task running/);
+  assert.match(h.widgets.at(-1)![0], /^1 background task running/);
   await h.run("exit 7");
-  await waitUntil(async () => (await h.list()).filter((j) => j.status === "running").length, (n) => n === 1, "natural exit footer");
-  assert.match(h.statuses.at(-1)!, /^1 background task running/);
+  await waitUntil(async () => (await h.list()).filter((j) => j.status === "running").length, (n) => n === 1, "natural exit widget");
+  assert.match(h.widgets.at(-1)![0], /^1 background task running/);
   await h.execute("background_stop", { id: monitor.id });
-  assert.match(h.statuses.at(-1)!, /^0 background tasks running/);
+  assert.match(h.widgets.at(-1)![0], /^0 background tasks running/);
   await h.shutdown();
-  assert.equal(h.statuses.at(-1), undefined);
+  assert.equal(h.widgets.at(-1), undefined);
 });
 
 test("/ps inspects output and stops only the selected task without model turns or terminal escapes", async (t) => {
@@ -390,6 +395,6 @@ test("/ps handles empty sessions and headless tools work without UI", async (t) 
   const job = await headless.run("exec sleep 60");
   await headless.commands.get("ps").handler("", headless.ctx);
   await headless.execute("background_stop", { id: job.id });
-  assert.deepEqual(headless.statuses, []);
+  assert.deepEqual(headless.widgets, []);
   assert.deepEqual(headless.notices, []);
 });

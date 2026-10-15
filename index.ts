@@ -37,11 +37,11 @@ export default function (pi: ExtensionAPI) {
   let shuttingDown = false;
   let uiContext: ExtensionContext | undefined;
   const plain = (text: string) => stripVTControlCharacters(text).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-  function updateStatus(ctx = uiContext) {
+  function updateWidget(ctx = uiContext) {
     if (!ctx?.hasUI) return;
     uiContext = ctx;
     const count = [...jobs.values()].filter((job) => job.status === "running").length;
-    ctx.ui.setStatus("background", `${count} background task${count === 1 ? "" : "s"} running · /ps`);
+    ctx.ui.setWidget("background", [`${count} background task${count === 1 ? "" : "s"} running · /ps`], { placement: "belowEditor" });
   }
 
   function wake(job: Job, event: string, output: string, suppressed = 0, truncated = false) {
@@ -105,15 +105,15 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     shuttingDown = true;
     try { await Promise.all([...jobs.values()].map(stop)); }
-    finally { process.off("exit", onExit); jobs.clear(); uiContext?.ui.setStatus("background", undefined); uiContext = undefined; }
+    finally { process.off("exit", onExit); jobs.clear(); uiContext?.ui.setWidget("background", undefined); uiContext = undefined; }
   });
-  pi.on("session_start", (_event, ctx) => { shuttingDown = false; updateStatus(ctx); });
+  pi.on("session_start", (_event, ctx) => { shuttingDown = false; updateWidget(ctx); });
 
   pi.registerCommand("ps", {
     description: "View this session's background tasks, recent output, or stop a task",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) return;
-      updateStatus(ctx);
+      updateWidget(ctx);
       while (!shuttingDown) {
         const entries = [...jobs.values()].sort((a, b) => Number(b.status === "running") - Number(a.status === "running") || b.started - a.started);
         if (!entries.length) { ctx.ui.notify("No background tasks in this session.", "info"); return; }
@@ -186,7 +186,7 @@ export default function (pi: ExtensionAPI) {
         log.end();
         await logged;
         job.status = "exited"; job.code = code; job.signal = signal;
-        job.ended = Date.now(); updateStatus();
+        job.ended = Date.now(); updateWidget();
         if (!job.silent && !shuttingDown) {
           if (job.mode === "monitor") flush(job, true);
           const output = (job.mode === "monitor" ? job.stdoutTail : job.tail).toString("utf8").replace(/\n$/, "").split("\n").slice(-20).join("\n");
@@ -196,7 +196,7 @@ export default function (pi: ExtensionAPI) {
       });
       try { await once(child, "spawn"); }
       catch (error) { job.silent = true; await job.done; jobs.delete(id); throw error; }
-      updateStatus(ctx);
+      updateWidget(ctx);
       return result({ id, pid: job.pid, mode: job.mode });
     },
   });
