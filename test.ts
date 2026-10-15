@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
-import registerSentinel from "./index.ts";
+import registerBackground from "./index.ts";
 
 type Job = {
   id: string; pid: number; mode: "background" | "monitor"; description: string;
@@ -27,20 +27,35 @@ async function waitUntil<T>(read: () => T | Promise<T>, ready: (value: T) => boo
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
-function harness(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "pi-sentinel-test-"));
+function harness(t: TestContext, hasUI = false) {
+  const dir = mkdtempSync(join(tmpdir(), "pi-background-test-"));
   const session = dir.split("/").at(-1)!;
   const tools = new Map<string, any>();
   const handlers = new Map<string, Array<(...args: any[]) => any>>();
   const wakes: Wake[] = [];
-  const ctx = { cwd: dir, sessionManager: { getSessionId: () => session } };
-  registerSentinel({
+  const commands = new Map<string, any>();
+  const statuses: Array<string | undefined> = [];
+  const notices: string[] = [];
+  const selections: Array<{ title: string; options: string[] }> = [];
+  const choices: Array<string | ((options: string[]) => string | undefined)> = [];
+  const ctx = { cwd: dir, hasUI, mode: "tui", sessionManager: { getSessionId: () => session }, ui: {
+    setStatus: (_key: string, value: string | undefined) => { statuses.push(value); },
+    notify: (text: string) => { notices.push(text); },
+    select: async (title: string, options: string[]) => {
+      selections.push({ title, options });
+      const choice = choices.shift();
+      return typeof choice === "function" ? choice(options) : choice;
+    },
+  } };
+  registerBackground({
     registerTool: (tool: any) => tools.set(tool.name, tool),
+    registerCommand: (name: string, command: any) => commands.set(name, command),
     on: (event: string, handler: (...args: any[]) => any) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
     sendMessage: (message: Wake["message"], options: unknown) => { wakes.push({ message, options }); },
   } as any);
+  for (const handler of handlers.get("session_start") ?? []) handler({ type: "session_start" }, ctx);
   const execute = (name: string, params: object = {}) => {
     assert.ok(tools.has(name), `${name} is registered`);
     return tools.get(name).execute("test-call", params, undefined, undefined, ctx);
@@ -52,7 +67,7 @@ function harness(t: TestContext) {
   t.after(async () => {
     try { await shutdown(); }
     finally {
-      rmSync(join(tmpdir(), "pi-sentinel", session), { recursive: true, force: true });
+      rmSync(join(tmpdir(), "pi-background", session), { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -64,7 +79,7 @@ function harness(t: TestContext) {
     return parsed;
   };
   const list = async (): Promise<Job[]> => {
-    const jobs = json(await execute("sentinel_list"));
+    const jobs = json(await execute("background_list"));
     assert.ok(Array.isArray(jobs));
     for (const job of jobs) {
       assert.equal(typeof job.id, "string");
@@ -81,7 +96,7 @@ function harness(t: TestContext) {
     return jobs;
   };
   const run = async (command: string, mode: Job["mode"] = "background", description = "test job") => {
-    const job = json(await execute("sentinel_run", { command, mode, description }));
+    const job = json(await execute("background_run", { command, mode, description }));
     assert.deepEqual(Object.keys(job).sort(), ["id", "mode", "pid"]);
     assert.equal(typeof job.id, "string");
     assert.ok(Number.isInteger(job.pid) && job.pid > 0);
@@ -94,7 +109,7 @@ function harness(t: TestContext) {
     writeFileSync(path, source);
     return `exec ${quote(process.execPath)} ${quote(path)}`;
   };
-  return { dir, ctx, tools, wakes, execute, shutdown, json, list, run, script };
+  return { dir, ctx, tools, wakes, execute, shutdown, json, list, run, script, commands, statuses, notices, selections, choices };
 }
 
 type Harness = ReturnType<typeof harness>;
@@ -104,10 +119,10 @@ const exited = (h: Harness, id: string) => waitUntil(
 );
 
 function checkWake(wake: Wake, id: string) {
-  assert.equal(wake.message.customType, "sentinel");
+  assert.equal(wake.message.customType, "background");
   assert.equal(wake.message.display, true);
   assert.deepEqual(wake.options, { deliverAs: "followUp", triggerTurn: true });
-  assert.ok(wake.message.content.startsWith(`sentinel ${id} (`));
+  assert.ok(wake.message.content.startsWith(`background ${id} (`));
   assert.match(wake.message.content, /untrusted/i);
   assert.match(wake.message.content, /(?:not instructions|not.*instructions|do not.*(?:follow|obey))/i);
 }
@@ -184,7 +199,7 @@ test("background returns immediately, logs both streams in session cwd, and wake
   assert.equal(running.status, "running");
   assert.equal(running.description, "background tests");
   assert.equal(running.pid, job.pid);
-  assert.equal(running.logPath, join(tmpdir(), "pi-sentinel", h.ctx.sessionManager.getSessionId(), `${job.id}.log`));
+  assert.equal(running.logPath, join(tmpdir(), "pi-background", h.ctx.sessionManager.getSessionId(), `${job.id}.log`));
   const done = (await exited(h, job.id))!;
   assert.equal(done.code, 7);
   assert.equal(done.signal, null);
@@ -271,7 +286,7 @@ for (const ignoreDescendants of [false, true]) {
     const job = await h.run(source.command, "monitor");
     const pids = await waitUntil(source.pids, (ids) => ids.length === 3 && ids.every(alive), "three live process generations");
     assert.ok(pids.includes(job.pid));
-    const stopped = h.json(await h.execute("sentinel_stop", { id: job.id }));
+    const stopped = h.json(await h.execute("background_stop", { id: job.id }));
     assert.equal(stopped.id, job.id);
     assert.equal(stopped.status, "exited");
     assert.ok(stopped.code !== null || stopped.signal !== null);
@@ -299,8 +314,8 @@ test("caps concurrent jobs at twenty, gives actionable errors, and clears the ca
   const jobs = [];
   for (let i = 0; i < 20; i++) jobs.push(await h.run("exec sleep 60"));
   assert.equal((await h.list()).filter((job) => job.status === "running").length, 20);
-  await expectError(() => h.execute("sentinel_run", { command: "exec sleep 60", mode: "background", description: "over cap" }), /sentinel_list/);
-  await expectError(() => h.execute("sentinel_run", { command: "exec sleep 60", mode: "background", description: "over cap" }), /sentinel_stop/);
+  await expectError(() => h.execute("background_run", { command: "exec sleep 60", mode: "background", description: "over cap" }), /background_list/);
+  await expectError(() => h.execute("background_run", { command: "exec sleep 60", mode: "background", description: "over cap" }), /background_stop/);
   assert.equal((await h.list()).length, 20);
   await h.shutdown();
   await waitUntil(() => jobs.map((job) => alive(job.pid)), (states) => states.every((state) => !state), "twenty processes to die");
@@ -310,9 +325,9 @@ test("caps concurrent jobs at twenty, gives actionable errors, and clears the ca
 
 test("unknown stop IDs and nonexistent spawn cwd fail without leaving running jobs", async (t) => {
   const h = harness(t);
-  await expectError(() => h.execute("sentinel_stop", { id: "unknown-job" }), /unknown|not found|no.*job/i);
+  await expectError(() => h.execute("background_stop", { id: "unknown-job" }), /unknown|not found|no.*job/i);
   h.ctx.cwd = join(h.dir, "nonexistent-cwd");
-  await expectError(() => h.execute("sentinel_run", { command: "echo should-not-run", mode: "background", description: "bad cwd" }), /ENOENT|spawn|cwd|no such/i);
+  await expectError(() => h.execute("background_run", { command: "echo should-not-run", mode: "background", description: "bad cwd" }), /ENOENT|spawn|cwd|no such/i);
   assert.ok((await h.list()).every((job) => job.status === "exited"));
   assert.equal(h.wakes.length, 0);
 });
@@ -329,4 +344,52 @@ test("wake content is bounded, explicitly untrusted, and quotes instruction-like
   assert.match(content, /truncat|omitted|\.\.\.|…/i);
   for (const line of content.split("\n").filter((line) => line.includes(hostile))) assert.ok(line.startsWith("| "));
   assert.ok(readFileSync(done.logPath, "utf8").length > 20_000, "message limits must not truncate the log");
+});
+
+test("footer counts both modes, updates on natural exit and stop, and clears on shutdown", async (t) => {
+  const h = harness(t, true);
+  assert.match(h.statuses.at(-1)!, /^0 background tasks running/);
+  const background = await h.run("exec sleep 60");
+  const monitor = await h.run("exec sleep 60", "monitor");
+  assert.match(h.statuses.at(-1)!, /^2 background tasks running.*\/ps/);
+  await h.execute("background_stop", { id: background.id });
+  assert.match(h.statuses.at(-1)!, /^1 background task running/);
+  await h.run("exit 7");
+  await waitUntil(async () => (await h.list()).filter((j) => j.status === "running").length, (n) => n === 1, "natural exit footer");
+  assert.match(h.statuses.at(-1)!, /^1 background task running/);
+  await h.execute("background_stop", { id: monitor.id });
+  assert.match(h.statuses.at(-1)!, /^0 background tasks running/);
+  await h.shutdown();
+  assert.equal(h.statuses.at(-1), undefined);
+});
+
+test("/ps inspects output and stops only the selected task without model turns or terminal escapes", async (t) => {
+  const h = harness(t, true);
+  const job = await h.run(h.script("console.log('hello\\x1b[31m world\\x1b[0m'); setInterval(() => {}, 1000);"), "monitor", "watch\x1b[31m job\x1b[0m");
+  const other = await h.run("exec sleep 60", "background", "other job");
+  const stored = (await h.list()).find((j) => j.id === job.id)!;
+  await waitUntil(() => readFileSync(stored.logPath, "utf8"), (s) => s.includes("hello"), "logged output");
+  h.choices.push((options) => options.find((s) => s.includes(`PID ${job.pid}`)), "View recent output",
+    (options) => options.find((s) => s.includes(`PID ${job.pid}`)), "Stop task");
+  await h.commands.get("ps").handler("", h.ctx);
+  assert.ok(h.notices.some((s) => s.includes("hello world")));
+  assert.ok(h.notices.every((s) => !s.includes("\x1b")));
+  assert.ok(h.selections.every((s) => !s.options.join("").includes("\x1b")));
+  assert.ok(h.selections[0].title.includes("2 running"));
+  assert.equal((await h.list()).find((j) => j.id === job.id)!.status, "exited");
+  assert.equal((await h.list()).find((j) => j.id === other.id)!.status, "running");
+  assert.equal(h.wakes.length, 0);
+});
+
+test("/ps handles empty sessions and headless tools work without UI", async (t) => {
+  const h = harness(t, true);
+  await h.commands.get("ps").handler("", h.ctx);
+  assert.equal(h.selections.length, 0);
+  assert.ok(h.notices[0].includes("No background tasks"));
+  const headless = harness(t);
+  const job = await headless.run("exec sleep 60");
+  await headless.commands.get("ps").handler("", headless.ctx);
+  await headless.execute("background_stop", { id: job.id });
+  assert.deepEqual(headless.statuses, []);
+  assert.deepEqual(headless.notices, []);
 });
