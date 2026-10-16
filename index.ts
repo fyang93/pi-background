@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
     if (!ctx?.hasUI) return;
     uiContext = ctx;
     const count = [...jobs.values()].filter((job) => job.status === "running").length;
-    ctx.ui.setWidget("background", count ? [`${count} background task${count === 1 ? "" : "s"} running · /ps`] : undefined, { placement: "belowEditor" });
+    ctx.ui.setWidget("background", count ? [`${count} background task${count === 1 ? "" : "s"} running · /ps`] : undefined, { placement: "aboveEditor" });
   }
 
   function wake(job: Job, event: string, output: string, suppressed = 0, truncated = false) {

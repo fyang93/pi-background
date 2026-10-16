@@ -42,7 +42,7 @@ function harness(t: TestContext, hasUI = false) {
     setStatus: () => { assert.fail("background count must use its own widget, not the shared footer"); },
     setWidget: (key: string, value: string[] | undefined, options?: { placement: string }) => {
       assert.equal(key, "background");
-      if (value) { assert.equal(value.length, 1); assert.equal(options?.placement, "belowEditor"); }
+      if (value) { assert.equal(value.length, 1); assert.equal(options?.placement, "aboveEditor"); }
       widgets.push(value);
     },
     notify: (text: string) => { notices.push(text); },
